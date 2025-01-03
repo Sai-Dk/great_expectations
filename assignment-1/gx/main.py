@@ -1,115 +1,102 @@
-import pandas as pd
 import great_expectations as ge
-from great_expectations.data_context import DataContext  
-import json  
-import smtplib
-from email.mime.text import MIMEText
+import pandas as pd
+from great_expectations.core.batch import BatchRequest
 
+file_path = 'customers.csv'
+smtp_address = 'smtp.office365.com'  
+smtp_port = 587
+sender_login = 'sai.dadvai@accellor.com'
+sender_password = 'Ryoiki@tenkai1'  
+receiver_email = 'saidikshit9000@gmail.com'
 
-# Here i was facing error while suite creation so i created suite using terminal
-suite_name = "customer_suite"
+def validate_customer_data(file_path):
+    df = pd.read_csv(file_path)
+    df_ge = ge.from_pandas(df)
 
+    # Index should be an integer
+    df_ge.expect_column_values_to_be_of_type('Index', 'int')
 
-context = DataContext("C:\\Python\\gx")
+    # Length of customer ID should not be greater than 15
+    df_ge.expect_column_value_lengths_to_be_between('Customer Id', min_value=None, max_value=15)
 
-existing_suites = context.list_expectation_suite_names()
-if suite_name not in existing_suites:
-    context.add_or_update_expectation_suite(expectation_suite_name=suite_name)
+    # First name and last name should be varchar (string)
+    df_ge.expect_column_values_to_be_of_type('First Name', 'str')
+    df_ge.expect_column_values_to_be_of_type('Last Name', 'str')
 
-# Function for data validation
-def validate_customer_data(file_name):
-    # Step 1: Read the CSV file
-    customer_df = pd.read_csv(file_name)
+    # Subscription date should be a date
+    df_ge.expect_column_values_to_match_strftime_format('Subscription Date', '%Y-%m-%d')
 
-    customer_df_ge = ge.from_pandas(customer_df)
-    # Validation rules
+    results = df_ge.validate()
+    return results
 
-    # 1. Index should be integer
-    customer_df_ge.expect_table_row_count_to_be_between(1, 1000) 
-    customer_df_ge.expect_column_values_to_be_in_set('Index', list(range(len(customer_df))))
+def send_validation_report(file_path, smtp_address, smtp_port, sender_login, sender_password, receiver_email):
+    context = ge.get_context()
 
-    # 2. Length of customer ID should not be greater than 15
-    customer_df_ge.expect_column_value_lengths_to_be_between('Customer Id', 1, 15)
+    # Ensure the datasource configuration
+    datasource_config = {
+        "name": "my_csv_datasource",
+        "class_name": "Datasource",
+        "execution_engine": {"class_name": "PandasExecutionEngine"},
+        "data_connectors": {
+            "my_csv_data_connector": {
+                "class_name": "InferredAssetFilesystemDataConnector",
+                "base_directory": "C:/Python/assignment-1/gx",
+                "default_regex": {
+                    "pattern": "(.*)\\.csv",
+                    "group_names": ["data_asset_name"]
+                }
+            }
+        }
+    }
+    context.add_datasource(**datasource_config)
 
-    # 3. First name and last name should be varchar (assumed to be strings here)
-    customer_df_ge.expect_column_values_to_be_of_type('First Name', 'str')
-    customer_df_ge.expect_column_values_to_be_of_type('Last Name', 'str')
+    # Create the batch request
+    batch_request = BatchRequest(
+        datasource_name="my_csv_datasource",
+        data_connector_name="my_csv_data_connector",
+        data_asset_name="customers"
+    )
 
-    # 4. Subscription date should be a date
-    customer_df_ge.expect_column_values_to_be_of_type('Subscription Date', 'datetime64[ns]')
-
-    # Step 5: Validate the data
-    results = customer_df_ge.validate()
-
-    # Step 6: Prepare the report in JSON format
-    report = {
-        "success": results['success'],
-        "results": []
+    # Define the checkpoint
+    checkpoint_name = "my_checkpoint"
+    checkpoint_config = {
+        "name": checkpoint_name,
+        "config_version": 1.0,
+        "class_name": "SimpleCheckpoint",
+        "validations": [
+            {
+                "batch_request": batch_request,
+                "expectation_suite_name": "customer_suite"
+            }
+        ],
+        "action_list": [
+            {
+                "name": "email_action",
+                "action": {
+                    "class_name": "EmailAction",
+                    "smtp_address": smtp_address,
+                    "smtp_port": smtp_port,
+                    "sender_login": sender_login,
+                    "sender_password": sender_password,
+                    "receiver_email": receiver_email,
+                    "subject": "Great Expectations Validation Report"
+                }
+            }
+        ]
     }
 
-    # Extracting relevant information from results
-    for result in results['results']:
-        
-        serializable_result = {
-            "element_count": result['result'].get('element_count', 0),
-            "unexpected_count": result['result'].get('unexpected_count', 0),                                  #This is for serialization of result
-            "unexpected_percent": result['result'].get('unexpected_percent', 0.0),                            #To get proper informaton from the 
-            "partial_unexpected_list": result['result'].get('partial_unexpected_list', []),                   #code
-            "missing_count": result['result'].get('missing_count', 0),
-            "missing_percent": result['result'].get('missing_percent', 0.0),
-            "unexpected_percent_total": result['result'].get('unexpected_percent_total', 0.0),
-            "unexpected_percent_nonmissing": result['result'].get('unexpected_percent_nonmissing', 0.0),
-        }
-
-        # Converting expectation_config to a serializable format
-        expectation_config = {
-            "expectation_type": result['expectation_config']['expectation_type'],
-            "kwargs": result['expectation_config']['kwargs'],
-            "meta": result['expectation_config'].get('meta', {})
-        }
-
-        report['results'].append({
-            "success": result['success'],
-            "expectation_config": expectation_config,  
-            "result": serializable_result,  
-            "meta": result.get('meta', {}),
-            "exception_info": result.get('exception_info', {})
-        })
-
-    return json.dumps(report, indent=2)  
-
-
-# email_sender.py
-
-def send_email(report):
-    sender_email = "sai.dadvai@accellor.com"  
-    receiver_email = "piyush.magarde@accellor.com"  
-    password = "Ryoiki@tenkai1"  
-
-    msg = MIMEText(report)
-    msg['Subject'] = 'Customer Data Validation Report'
-    msg['From'] = sender_email
-    msg['To'] = receiver_email
-
-    # Step 7: Send the email using Outlook SMTP server
     try:
-        with smtplib.SMTP('smtp.office365.com', 587) as server:
-            server.starttls()  # Upgrade the connection to a secure encrypted SSL/TLS connection
-            server.login(sender_email, password)  # Log in to your email account
-            server.sendmail(sender_email, receiver_email, msg.as_string())  # Send the email
-        print("Email sent successfully.")
+        context.delete_checkpoint(checkpoint_name)
     except Exception as e:
-        print(f"Error sending email: {e}")
+        print(f"Checkpoint '{checkpoint_name}' does not exist or cannot be deleted: {e}")
 
-def test_function():
-    return "Test function works!"
+    # Create and run the checkpoint
+    context.add_checkpoint(**checkpoint_config)
+    context.run_checkpoint(checkpoint_name=checkpoint_name)
 
+# Run validation
+validation_results = validate_customer_data(file_path)
+print(validation_results)
 
-if __name__ == "__main__":
-    report = validate_customer_data('customers-100000.csv')
-    
-    # Step 8: Send the report via email
-    send_email(report)
-    print("Validation report sent via email.")
-
-
+# Send email with the validation report
+send_validation_report(file_path, smtp_address, smtp_port, sender_login, sender_password, receiver_email)
