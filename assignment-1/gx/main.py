@@ -1,102 +1,207 @@
-import great_expectations as ge
-import pandas as pd
+from great_expectations.core import ExpectationSuite
+from great_expectations.data_context import FileDataContext
+from great_expectations.checkpoint import SimpleCheckpoint
 from great_expectations.core.batch import BatchRequest
+from great_expectations.actions import PandasTableValidationResult
+from great_expectations.actions.validation_operators import ActionListValidationOperator
+from great_expectations.data_context.types import DataContextConfig
 
-file_path = 'customers.csv'
-smtp_address = 'smtp.office365.com'  
-smtp_port = 587
-sender_login = 'sai.dadvai@accellor.com'
-sender_password = 'Ryoiki@tenkai1'  
-receiver_email = 'saidikshit9000@gmail.com'
+import pandas as pd
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import datetime
+from dotenv import load_dotenv
+import os
 
-def validate_customer_data(file_path):
-    df = pd.read_csv(file_path)
-    df_ge = ge.from_pandas(df)
+# Load environment variables from .env file
+load_dotenv()
 
-    # Index should be an integer
-    df_ge.expect_column_values_to_be_of_type('Index', 'int')
+# Get email settings from environment variables
+sender_email = os.getenv('sender_login')
+receiver_email = os.getenv('receiver_email')
+password = os.getenv('sender_password')
 
-    # Length of customer ID should not be greater than 15
-    df_ge.expect_column_value_lengths_to_be_between('Customer Id', min_value=None, max_value=15)
+# Function to send an email report
+def send_email_report(report_str):
+    """Sends an email with the validation report."""
+    msg = MIMEMultipart()
+    msg['From'] = sender_email
+    msg['To'] = receiver_email
+    msg['Subject'] = 'Customer Data Validation Report'
 
-    # First name and last name should be varchar (string)
-    df_ge.expect_column_values_to_be_of_type('First Name', 'str')
-    df_ge.expect_column_values_to_be_of_type('Last Name', 'str')
-
-    # Subscription date should be a date
-    df_ge.expect_column_values_to_match_strftime_format('Subscription Date', '%Y-%m-%d')
-
-    results = df_ge.validate()
-    return results
-
-def send_validation_report(file_path, smtp_address, smtp_port, sender_login, sender_password, receiver_email):
-    context = ge.get_context()
-
-    # Ensure the datasource configuration
-    datasource_config = {
-        "name": "my_csv_datasource",
-        "class_name": "Datasource",
-        "execution_engine": {"class_name": "PandasExecutionEngine"},
-        "data_connectors": {
-            "my_csv_data_connector": {
-                "class_name": "InferredAssetFilesystemDataConnector",
-                "base_directory": "C:/Python/assignment-1/gx",
-                "default_regex": {
-                    "pattern": "(.*)\\.csv",
-                    "group_names": ["data_asset_name"]
-                }
-            }
-        }
-    }
-    context.add_datasource(**datasource_config)
-
-    # Create the batch request
-    batch_request = BatchRequest(
-        datasource_name="my_csv_datasource",
-        data_connector_name="my_csv_data_connector",
-        data_asset_name="customers"
-    )
-
-    # Define the checkpoint
-    checkpoint_name = "my_checkpoint"
-    checkpoint_config = {
-        "name": checkpoint_name,
-        "config_version": 1.0,
-        "class_name": "SimpleCheckpoint",
-        "validations": [
-            {
-                "batch_request": batch_request,
-                "expectation_suite_name": "customer_suite"
-            }
-        ],
-        "action_list": [
-            {
-                "name": "email_action",
-                "action": {
-                    "class_name": "EmailAction",
-                    "smtp_address": smtp_address,
-                    "smtp_port": smtp_port,
-                    "sender_login": sender_login,
-                    "sender_password": sender_password,
-                    "receiver_email": receiver_email,
-                    "subject": "Great Expectations Validation Report"
-                }
-            }
-        ]
-    }
+    body = report_str
+    msg.attach(MIMEText(body, 'plain'))
 
     try:
-        context.delete_checkpoint(checkpoint_name)
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(sender_email, password)
+        text = msg.as_string()
+        server.sendmail(sender_email, receiver_email, text)
+        server.quit()
+        print("Email sent successfully!")
     except Exception as e:
-        print(f"Checkpoint '{checkpoint_name}' does not exist or cannot be deleted: {e}")
+        print(f"Error sending email: {e}")
 
-    # Create and run the checkpoint
-    context.add_checkpoint(**checkpoint_config)
-    context.run_checkpoint(checkpoint_name=checkpoint_name)
+# Create a DataContext
+data_context_config = DataContextConfig(
+    **{
+        "plugins_directory": "plugins/",
+        "expectations_store_name": "expectations_store",
+        "validations_store_name": "validations_store",
+        "evaluation_parameter_store_name": "evaluation_parameter_store",
+        "checkpoint_store_name": "checkpoint_store",
+        "stores": {
+            "expectations_store": {
+                "class_name": "ExpectationsStore",
+                "store_backend": {
+                    "class_name": "TupleFilesystemStoreBackend",
+                    "base_directory": "./great_expectations/expectations",
+                },
+            },
+            "validations_store": {
+                "class_name": "ValidationsStore",
+                "store_backend": {
+                    "class_name": "TupleFilesystemStoreBackend",
+                    "base_directory": "./great_expectations/validations",
+                },
+            },
+            "evaluation_parameter_store": {
+                "class_name": "EvaluationParameterStore",
+                "store_backend": {
+                    "class_name": "TupleFilesystemStoreBackend",
+                    "base_directory": "./great_expectations/evaluation_parameters",
+                },
+            },
+            "checkpoint_store": {
+                "class_name": "CheckpointStore",
+                "store_backend": {
+                    "class_name": "TupleFilesystemStoreBackend",
+                    "base_directory": "./great_expectations/checkpoints",
+                },
+            },
+            "datasource": {
+                "class_name": "PandasDatasource",
+                "execution_engine": {
+                    "class_name": "PandasExecutionEngine"
+                },
+                "data_connectors": {
+                    "default_inferred_data_connector": {
+                        "class_name": "InferredAssetFilesystemDataConnector",
+                        "base_directory": "./data",
+                        "default_regex": r".*\.csv"
+                    }
+                }
+            }
+        },
+        "data_docs_sites": {},
+    }
+)
 
-# Run validation
-validation_results = validate_customer_data(file_path)
-print(validation_results)
+context = FileDataContext(project_config=data_context_config)
 
-# Send email with the validation report
-send_validation_report(file_path, smtp_address, smtp_port, sender_login, sender_password, receiver_email)
+# Load the existing Expectation Suite
+expectation_suite_name = "customer_suite"
+suite = context.get_expectation_suite(expectation_suite_name=expectation_suite_name)
+
+# Create Batch Requests (Divide data into two batches)
+batch_request_1 = BatchRequest(
+    datasource_name="datasource",
+    data_connector_name="default_inferred_data_connector",
+    data_asset_name="customer.csv",
+    partition_identifiers={},
+    limit=5000  # First 5k records
+)
+
+batch_request_2 = BatchRequest(
+    datasource_name="datasource",
+    data_connector_name="default_inferred_data_connector",
+    data_asset_name="customer.csv",
+    partition_identifiers={},
+    offset=5000,  # Start from the 5001st record
+    limit=5000  # Next 5k records
+)
+
+# Create Action Lists
+action_list_1 = ActionListValidationOperator(
+    action_list=[
+        PandasTableValidationResult(
+            action_callable=lambda validation_result: print(
+                f"Validation Results for Batch 1:\n{validation_result.to_json_dict()}"
+            )
+        )
+    ]
+)
+
+action_list_2 = ActionListValidationOperator(
+    action_list=[
+        PandasTableValidationResult(
+            action_callable=lambda validation_result: print(
+                f"Validation Results for Batch 2:\n{validation_result.to_json_dict()}"
+            )
+        ),
+        PandasTableValidationResult(
+            action_callable=lambda validation_result: send_email_report(
+                validation_result.to_json_dict()
+            )
+        )
+    ]
+)
+
+# Create Checkpoints
+checkpoint_config_1 = {
+    "name": "customer_validation_checkpoint_1",
+    "config_version": 1,
+    "class_name": "SimpleCheckpoint",
+    "validations": [
+        {
+            "batch_request": batch_request_1,
+            "expectation_suite_name": expectation_suite_name,
+            "action_list": action_list_1,
+        }
+    ],
+    "schedules": [
+        {
+            "schedule_type": "cron",
+            "cron_string": "0 0 * * *",  # Run daily at UTC 00:00
+        }
+    ],
+}
+
+checkpoint_config_2 = {
+    "name": "customer_validation_checkpoint_2",
+    "config_version": 1,
+    "class_name": "SimpleCheckpoint",
+    "validations": [
+        {
+            "batch_request": batch_request_2,
+            "expectation_suite_name": expectation_suite_name,
+            "action_list": action_list_2,
+        }
+    ],
+    "schedules": [
+        {
+            "schedule_type": "cron",
+            "cron_string": "0 0 * * *",  # Run daily at UTC 00:00
+        }
+    ],
+}
+
+checkpoint_1 = SimpleCheckpoint(
+    name="customer_validation_checkpoint_1",
+    config_version=1,
+    data_context=context,
+    **checkpoint_config_1
+)
+
+checkpoint_2 = SimpleCheckpoint(
+    name="customer_validation_checkpoint_2",
+    config_version=1,
+    data_context=context,
+    **checkpoint_config_2
+)
+
+# Run Checkpoints (for initial validation)
+checkpoint_1.run()
+checkpoint_2.run()
